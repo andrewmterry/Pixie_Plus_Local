@@ -121,6 +121,13 @@ STARTUP_CONFIG_REFRESH_SPECS = (
         },
     },
     {
+        "key": "fan_sleep_settings",
+        "match_capabilities": ("supports_fan_sleep_config",),
+        "command_kwargs": {
+            "command_fan_action": "refresh_sleep_settings",
+        },
+    },
+    {
         "key": "sensor_settings",
         "match_any_capabilities": (
             "supports_hold_time",
@@ -201,6 +208,7 @@ hardware_list = {
     "3001": "Smart passive infrared motion sensor - SMS861CD/BTAM",
     "3002": "Smart passive infrared motion sensor - SMS862WF/WH/BTAM",    
     "2113": "Smart Timer Switch - STS600BTAM",
+    "5715": "Hunter Pacific ceiling fan",
     "2552": "Smart Dimmer rippleSHIELD - SDD400RS/BTAM",
     "2452": "Smart Dimmer rippleSHIELD - SDD400RS/BTAM",    
     "2704": "Strip Kit RGB - FLBP24V2RGB/BTAM",
@@ -500,6 +508,22 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "supports_timer": True,
         "timer_modes": ["timer", "override"],
     },
+    "5715": {
+        "is_light": False,
+        "is_switch": False,
+        "supports_onoff": True,
+        "is_fan": True,
+        "supports_fan_light": True,
+        "supports_fan_timer": True,
+        "supports_fan_sleep_config": True,
+        "supports_fan_fade": True,
+        "supports_fan_expected_result": True,
+        "fan_light_color_temp_kelvin": {
+            "warm": 2700,
+            "white": 4000,
+            "daylight": 6500,
+        },
+    },
     "2552": {
         "is_light": True,
         "is_switch": False,
@@ -733,6 +757,16 @@ def get_model_capabilities(model_no: str) -> Dict[str, Any]:
         "supports_motion_sensor": bool(caps.get("supports_motion_sensor", False)),
         "supports_photocell_sensor": bool(caps.get("supports_photocell_sensor", False)),
         "supports_timer": bool(caps.get("supports_timer", False)),
+        "is_fan": bool(caps.get("is_fan", False)),
+        "supports_fan_light": bool(caps.get("supports_fan_light", False)),
+        "supports_fan_timer": bool(caps.get("supports_fan_timer", False)),
+        "supports_fan_sleep_config": bool(caps.get("supports_fan_sleep_config", False)),
+        "supports_fan_fade": bool(caps.get("supports_fan_fade", False)),
+        "supports_fan_expected_result": bool(caps.get("supports_fan_expected_result", False)),
+        "fan_light_color_temp_kelvin": {
+            str(name): int(kelvin)
+            for name, kelvin in dict(caps.get("fan_light_color_temp_kelvin") or {}).items()
+        },
         "timer_modes": [str(mode) for mode in caps.get("timer_modes", [])],
         "supports_hold_time": bool(caps.get("supports_hold_time", False)),
         "supports_brightness_threshold": bool(caps.get("supports_brightness_threshold", False)),
@@ -1482,6 +1516,8 @@ def _decode_mode_from_capabilities(capabilities: Any) -> str:
     Precedence matters here: USB and multi-channel devices also support on/off,
     but their value-byte encoding is more specific than plain relay semantics.
     """
+    if _cap(capabilities, "is_fan", False):
+        return "fan"
     if _cap(capabilities, "supports_gate", False):
         return MODE_GATE
     if _cap(capabilities, "supports_timer", False):

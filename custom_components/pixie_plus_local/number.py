@@ -73,6 +73,31 @@ def _iter_hold_time_endpoints(inventory, device_id: int | None = None) -> list[P
     return endpoints
 
 
+def _iter_fan_number_endpoints(inventory, device_id: int | None = None) -> list[PixieEndpoint]:
+    gateway_identifier = parent_device_identifier(inventory)
+    endpoints: list[PixieEndpoint] = []
+    for current_device_id in sorted(inventory.devices_by_id):
+        record = inventory.devices_by_id[current_device_id]
+        if device_id is not None and record.id != int(device_id):
+            continue
+        if not record.capabilities.is_fan:
+            continue
+        endpoint_specs = []
+        if record.capabilities.supports_fan_sleep_config:
+            endpoint_specs.extend([
+                ("fan_sleep_duration", "Sleep duration"),
+                ("fan_sleep_expected_result", "Sleep expected result"),
+            ])
+        for endpoint_key, name in endpoint_specs:
+            endpoints.append(PixieEndpoint(
+                device_id=record.id, endpoint_key=endpoint_key, command_target=endpoint_key,
+                entity_unique_id=endpoint_unique_identifier(record, endpoint_key),
+                device_identifier=physical_device_identifier(record), device_name=record.name,
+                via_device_identifier=gateway_identifier, entity_name=name,
+            ))
+    return endpoints
+
+
 def _iter_power_poll_interval_endpoints(inventory, device_id: int | None = None) -> list[PixieEndpoint]:
     """Return power-meter poll interval endpoints."""
     gateway_identifier = parent_device_identifier(inventory)
@@ -162,6 +187,8 @@ async def async_setup_entry(
         entities.append(PixiePlusPowerPollIntervalNumberEntity(runtime_data, endpoint))
     for endpoint in _iter_gate_setting_endpoints(inventory):
         entities.append(PixiePlusGateSettingNumberEntity(runtime_data, endpoint))
+    for endpoint in _iter_fan_number_endpoints(inventory):
+        entities.append(PixiePlusFanNumberEntity(runtime_data, endpoint))
     async_add_entities(entities)
 
     @callback
@@ -178,6 +205,8 @@ async def async_setup_entry(
             entities_to_add.append(PixiePlusPowerPollIntervalNumberEntity(runtime_data, endpoint))
         for endpoint in _iter_gate_setting_endpoints(current_inventory, device_id=int(device_id)):
             entities_to_add.append(PixiePlusGateSettingNumberEntity(runtime_data, endpoint))
+        for endpoint in _iter_fan_number_endpoints(current_inventory, device_id=int(device_id)):
+            entities_to_add.append(PixiePlusFanNumberEntity(runtime_data, endpoint))
         if entities_to_add:
             async_add_entities(entities_to_add)
 
@@ -215,6 +244,55 @@ class PixiePlusTimerDurationNumberEntity(PixiePlusCoordinatorEntity, NumberEntit
                 command_timer_action="set_duration",
                 command_timer_duration=duration_seconds,
             )
+        except Exception as err:
+            raise HomeAssistantError(str(err)) from err
+
+
+class PixiePlusFanNumberEntity(PixiePlusCoordinatorEntity, NumberEntity):
+    """Fan timer and Sleep Mode configuration numbers."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, runtime_data: PixiePlusConfigEntryRuntimeData, endpoint: PixieEndpoint) -> None:
+        super().__init__(runtime_data, endpoint, domain=DOMAIN)
+        if endpoint.endpoint_key == "fan_sleep_duration":
+            self._attr_native_min_value = 5
+            self._attr_native_max_value = 1439
+            self._attr_native_unit_of_measurement = "min"
+        else:
+            self._attr_native_min_value = 0
+            self._attr_native_max_value = 9
+        self._attr_native_step = 1
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        return self.record.runtime.fan_sleep_enabled is True
+
+    @property
+    def native_value(self) -> int | None:
+        runtime = self.record.runtime
+        values = {
+            "fan_sleep_duration": runtime.fan_sleep_duration_minutes,
+            "fan_sleep_expected_result": runtime.fan_sleep_expected_result,
+        }
+        return values.get(self.endpoint.endpoint_key)
+
+    async def async_set_native_value(self, value: float) -> None:
+        value_int = round(value)
+        kwargs = {
+            "command_device_id": self.record.id,
+            "command_fan_action": "set_sleep_settings",
+            "command_fan_sleep_enabled": True,
+        }
+        if self.endpoint.endpoint_key == "fan_sleep_duration":
+            kwargs["command_fan_sleep_duration"] = max(5, min(1439, value_int))
+        else:
+            kwargs["command_fan_sleep_expected_result"] = max(0, min(9, value_int))
+        try:
+            await self.runtime_data.async_send_local_command(self.hass, **kwargs)
         except Exception as err:
             raise HomeAssistantError(str(err)) from err
 

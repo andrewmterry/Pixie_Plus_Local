@@ -181,6 +181,23 @@ def _iter_plug_led_refresh_endpoints(inventory, device_id: int | None = None) ->
     return endpoints
 
 
+def _iter_fan_sleep_refresh_endpoints(inventory, device_id: int | None = None) -> list[PixieEndpoint]:
+    gateway_identifier = parent_device_identifier(inventory)
+    endpoints: list[PixieEndpoint] = []
+    for current_device_id in sorted(inventory.devices_by_id):
+        record = inventory.devices_by_id[current_device_id]
+        if device_id is not None and record.id != int(device_id):
+            continue
+        if record.capabilities.supports_fan_sleep_config:
+            endpoints.append(PixieEndpoint(
+                device_id=record.id, endpoint_key="fan_sleep_refresh_settings", command_target="fan_sleep_settings_refresh",
+                entity_unique_id=endpoint_unique_identifier(record, "fan_sleep_refresh_settings"),
+                device_identifier=physical_device_identifier(record), device_name=record.name,
+                via_device_identifier=gateway_identifier, entity_name="Refresh sleep settings",
+            ))
+    return endpoints
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -205,6 +222,8 @@ async def async_setup_entry(
         entities.append(PixiePlusIndicatorLedRefreshButtonEntity(runtime_data, endpoint))
     for endpoint in _iter_plug_led_refresh_endpoints(inventory):
         entities.append(PixiePlusPlugLedRefreshButtonEntity(runtime_data, endpoint))
+    for endpoint in _iter_fan_sleep_refresh_endpoints(inventory):
+        entities.append(PixiePlusFanSleepRefreshButtonEntity(runtime_data, endpoint))
     async_add_entities(entities)
 
     @callback
@@ -225,6 +244,8 @@ async def async_setup_entry(
             entities_to_add.append(PixiePlusIndicatorLedRefreshButtonEntity(runtime_data, endpoint))
         for endpoint in _iter_plug_led_refresh_endpoints(current_inventory, device_id=int(device_id)):
             entities_to_add.append(PixiePlusPlugLedRefreshButtonEntity(runtime_data, endpoint))
+        for endpoint in _iter_fan_sleep_refresh_endpoints(current_inventory, device_id=int(device_id)):
+            entities_to_add.append(PixiePlusFanSleepRefreshButtonEntity(runtime_data, endpoint))
         if entities_to_add:
             async_add_entities(entities_to_add)
 
@@ -309,6 +330,25 @@ class PixiePlusSensorLearnThresholdButtonEntity(PixiePlusCoordinatorEntity, Butt
                 self.record.id,
                 "sensor_settings",
                 reason="learn_brightness_threshold",
+            )
+        except Exception as err:
+            raise HomeAssistantError(str(err)) from err
+
+
+class PixiePlusFanSleepRefreshButtonEntity(PixiePlusCoordinatorEntity, ButtonEntity):
+    """Refresh persisted Sleep Mode configuration from a fan."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, runtime_data: PixiePlusConfigEntryRuntimeData, endpoint: PixieEndpoint) -> None:
+        super().__init__(runtime_data, endpoint, domain=DOMAIN)
+
+    async def async_press(self) -> None:
+        try:
+            await self.runtime_data.async_refresh_config_for_device(
+                self.record.id,
+                "fan_sleep_settings",
+                reason="manual",
             )
         except Exception as err:
             raise HomeAssistantError(str(err)) from err

@@ -89,7 +89,7 @@ def _iter_timer_sensor_endpoints(inventory, device_id: int | None = None) -> lis
         record = inventory.devices_by_id[current_device_id]
         if device_id is not None and int(record.id) != int(device_id):
             continue
-        if not record.capabilities.supports_timer:
+        if not (record.capabilities.supports_timer or record.capabilities.supports_fan_timer):
             continue
         endpoints.append(
             PixieEndpoint(
@@ -100,7 +100,7 @@ def _iter_timer_sensor_endpoints(inventory, device_id: int | None = None) -> lis
                 device_identifier=physical_device_identifier(record),
                 device_name=record.name,
                 via_device_identifier=gateway_identifier,
-                entity_name="Timer",
+                entity_name="Sleep timer" if record.capabilities.is_fan else "Timer",
             )
         )
     return endpoints
@@ -302,6 +302,8 @@ class PixiePlusTimerRemainingSensorEntity(PixiePlusCoordinatorEntity, SensorEnti
         if not super().available:
             return False
         runtime = self.record.runtime
+        if self.record.capabilities.is_fan:
+            return runtime.fan_timer_kind == "sleep" and runtime.is_on is True
         return runtime.mode == 1 and runtime.is_on is True
 
     @property

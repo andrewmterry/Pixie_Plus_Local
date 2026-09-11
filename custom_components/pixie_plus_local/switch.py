@@ -40,6 +40,20 @@ def _iter_switch_endpoints(inventory, device_id: int | None = None) -> list[Pixi
             continue
         parent_identifier = physical_device_identifier(record)
 
+        if record.capabilities.is_fan:
+            for endpoint_key, name in (
+                ("fan_sleep_timer", "Sleep timer"),
+                ("fan_sleep_enabled", "Sleep mode"),
+                ("fan_sleep_fade", "Sleep fade"),
+            ):
+                endpoints.append(PixieEndpoint(
+                    device_id=record.id, endpoint_key=endpoint_key, command_target=endpoint_key,
+                    entity_unique_id=endpoint_unique_identifier(record, endpoint_key),
+                    device_identifier=parent_identifier, device_name=record.name,
+                    via_device_identifier=gateway_identifier, entity_name=name,
+                ))
+            continue
+
         if record.capabilities.supports_contact_sensor:
             endpoints.append(
                 PixieEndpoint(
@@ -241,6 +255,8 @@ class PixiePlusSwitchEntity(PixiePlusCoordinatorEntity, SwitchEntity):
             "plug_socket_led_indicator",
             "plug_usb_led_indicator",
             "sensor_led_indicator",
+            "fan_sleep_enabled",
+            "fan_sleep_fade",
         }:
             self._attr_entity_category = EntityCategory.CONFIG
         else:
@@ -277,10 +293,33 @@ class PixiePlusSwitchEntity(PixiePlusCoordinatorEntity, SwitchEntity):
             return runtime.plug_usb_led_indicator
         if target == "sensor_led_indicator":
             return runtime.sensor_led_indicator
+        if target == "fan_sleep_timer":
+            return runtime.fan_timer_kind == "sleep"
+        if target == "fan_sleep_enabled":
+            return runtime.fan_sleep_enabled
+        if target == "fan_sleep_fade":
+            return runtime.fan_sleep_fade
         return runtime.is_on
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        return self.endpoint.command_target != "fan_sleep_fade" or self.record.runtime.fan_sleep_enabled is True
 
     async def async_turn_on(self, **kwargs) -> None:
         try:
+            target = self.endpoint.command_target
+            if target == "fan_sleep_timer":
+                await self.runtime_data.async_send_local_command(self.hass, command_device_id=self.record.id, command_fan_action="start_sleep_timer")
+                return
+            if target in {"fan_sleep_enabled", "fan_sleep_fade"}:
+                await self.runtime_data.async_send_local_command(
+                    self.hass, command_device_id=self.record.id, command_fan_action="set_sleep_settings",
+                    command_fan_sleep_enabled=True,
+                    command_fan_sleep_fade=True if target == "fan_sleep_fade" else self.record.runtime.fan_sleep_fade,
+                )
+                return
             await self.runtime_data.async_send_local_command(
                 self.hass,
                 command_device_id=self.record.id,
@@ -292,6 +331,17 @@ class PixiePlusSwitchEntity(PixiePlusCoordinatorEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs) -> None:
         try:
+            target = self.endpoint.command_target
+            if target == "fan_sleep_timer":
+                await self.runtime_data.async_send_local_command(self.hass, command_device_id=self.record.id, command_fan_action="cancel_timer")
+                return
+            if target in {"fan_sleep_enabled", "fan_sleep_fade"}:
+                await self.runtime_data.async_send_local_command(
+                    self.hass, command_device_id=self.record.id, command_fan_action="set_sleep_settings",
+                    command_fan_sleep_enabled=False if target == "fan_sleep_enabled" else True,
+                    command_fan_sleep_fade=False if target == "fan_sleep_fade" else self.record.runtime.fan_sleep_fade,
+                )
+                return
             await self.runtime_data.async_send_local_command(
                 self.hass,
                 command_device_id=self.record.id,

@@ -1178,6 +1178,36 @@ class PixieAuthHandler:
                         "online_value": None,
                     }]
                     return decoded
+            if rec and rec.capabilities.supports_fan_sleep_config and flag_byte == 0xbb and len(raw) >= data_start + 7:
+                # D3 69 69 BB 00 04 <expected*16> <minutes:be16> 00 <mode> 00 00
+                try:
+                    expected_raw = int(raw[data_start + 2])
+                    duration_bytes = raw[data_start + 3 : data_start + 5]
+                    duration_minutes = int.from_bytes(duration_bytes, byteorder="big")
+                    reserved = int(raw[data_start + 5])
+                    sleep_mode = int(raw[data_start + 6])
+                    decoded["kind"] = "fan_sleep_settings"
+                    decoded["device_id"] = dev_id
+                    decoded["records"] = [{
+                        "id": dev_id,
+                        "fan_sleep_expected_result": expected_raw >> 4,
+                        "fan_sleep_duration_minutes": duration_minutes,
+                        "fan_sleep_enabled": sleep_mode in (2, 3),
+                        # Mode 01 does not report the previous fade preference.
+                        "fan_sleep_fade": True if sleep_mode == 3 else False if sleep_mode == 2 else None,
+                        "fan_sleep_settings_raw": {
+                            "expected_raw": expected_raw,
+                            "duration_hex": duration_bytes.hex(),
+                            "reserved": reserved,
+                            "mode": sleep_mode,
+                        },
+                    }]
+                    return decoded
+                except Exception:
+                    decoded["kind"] = "d36969"
+                    decoded["flag"] = flag_byte
+                    decoded["data_hex"] = raw[data_start:].hex()
+                    return decoded
             if rec and rec.capabilities.supports_gate and flag_byte in (0xbb, 0xbc, 0xbd):
                 decoded["kind"] = "gate_settings"
                 decoded["device_id"] = dev_id
@@ -1228,6 +1258,19 @@ class PixieAuthHandler:
             if flag_byte != 0xb9:
                 return None
 
+            if rec and rec.capabilities.is_fan:
+                decoded["kind"] = "fan_timer_status"
+                decoded["device_id"] = dev_id
+                try:
+                    # Fan B9 reports only remaining seconds in its first word.
+                    decoded["timer_remaining_seconds"] = int.from_bytes(raw[data_start + 1 : data_start + 5], byteorder="little")
+                except Exception:
+                    decoded["timer_remaining_seconds"] = None
+                decoded["records"] = [{
+                    "id": dev_id,
+                    "timer_remaining_seconds": decoded["timer_remaining_seconds"],
+                }]
+                return decoded
             if rec and rec.capabilities.supports_timer:
                 decoded["kind"] = "timer_status"
                 decoded["device_id"] = dev_id
@@ -1441,6 +1484,69 @@ class PixieAuthHandler:
             return 0
 
         payload_meta = payload_meta or {}
+        if kind == "fan_sleep_settings":
+            if not self.inventory:
+                return 0
+            first = records[0] if records else {}
+            dev_id = first.get("id")
+            if isinstance(dev_id, int) and dev_id in self.inventory.devices_by_id:
+                update_kwargs = {
+                    key: first[key]
+                    for key in (
+                        "fan_sleep_enabled",
+                        "fan_sleep_duration_minutes",
+                        "fan_sleep_expected_result",
+                    )
+                    if key in first
+                }
+                # Disabled replies intentionally omit fade; retain its last known value.
+                if first.get("fan_sleep_fade") is not None:
+                    update_kwargs["fan_sleep_fade"] = first["fan_sleep_fade"]
+                self.inventory.apply_device_update(dev_id, source=source, **update_kwargs)
+                self._log_debug(
+                    "Fan sleep settings update: dev_id=%s enabled=%s duration_minutes=%s fade=%s expected_result=%s raw=%s",
+                    dev_id,
+                    first.get("fan_sleep_enabled"),
+                    first.get("fan_sleep_duration_minutes"),
+                    first.get("fan_sleep_fade"),
+                    first.get("fan_sleep_expected_result"),
+                    first.get("fan_sleep_settings_raw"),
+                )
+                if notify_inventory:
+                    self._notify_inventory_updated()
+                return 1
+            return 0
+
+        if kind == "fan_timer_status":
+            if not self.inventory:
+                return 0
+            first = records[0] if records else {}
+            dev_id = first.get("id")
+            remaining = first.get("timer_remaining_seconds")
+            if isinstance(dev_id, int) and dev_id in self.inventory.devices_by_id:
+                rec = self.inventory.devices_by_id[dev_id]
+                total = rec.runtime.timer_total_seconds
+                if not isinstance(total, int) or total < int(remaining or 0):
+                    total = int(remaining) if isinstance(remaining, int) else total
+                self.inventory.apply_device_update(
+                    dev_id,
+                    source=source,
+                    timer_total_seconds=total,
+                    timer_remaining_seconds=remaining,
+                    last_timer_poll_at=time.time(),
+                )
+                self._log_debug(
+                    "Fan timer status update: dev_id=%s kind=%s total=%s remaining=%s",
+                    dev_id,
+                    rec.runtime.fan_timer_kind,
+                    total,
+                    remaining,
+                )
+                if notify_inventory:
+                    self._notify_inventory_updated()
+                return 1
+            return 0
+
         if kind == "timer_status":
             if not self.inventory:
                 return 0
@@ -1919,6 +2025,27 @@ class PixieAuthHandler:
                             dev_id,
                             LOCAL_TIMER_RESTART_GUARD_SECONDS,
                         )
+                elif mode == "fan":
+                    if isinstance(tail, int):
+                        fan_speed = (value_byte >> 4) & 0x0F
+                        fan_light_level = value_byte & 0x0F
+                        fan_temperature = "daylight" if tail & 0x08 else "warm" if tail & 0x10 else "white"
+                        fan_timer_kind = "sleep" if tail & 0x04 else "none"
+                        update_kwargs.update({
+                            "fan_speed": fan_speed,
+                            "fan_light_level": fan_light_level,
+                            "fan_light_temperature": fan_temperature,
+                            "fan_direction": "winter" if tail & 0x01 else "summer",
+                            "fan_sleep_enabled": bool(tail & 0x40),
+                            "fan_timer_kind": fan_timer_kind,
+                        })
+                        if fan_timer_kind == "none":
+                            update_kwargs["timer_remaining_seconds"] = None
+                        self._log_debug(
+                            "Fan runtime update: dev_id=%s value=0x%02x tail=0x%02x speed=%s light=%s temperature=%s direction=%s sleep_enabled=%s timer_kind=%s",
+                            dev_id, value_byte, tail, fan_speed, fan_light_level, fan_temperature,
+                            "winter" if tail & 0x01 else "summer", bool(tail & 0x40), fan_timer_kind,
+                        )
                 elif mode == "tunable_white":
                     if isinstance(tail, int):
                         decoded_temp = decode_color_temp_runtime_state_for_capabilities(rec.capabilities, value_byte, tail)
@@ -2052,6 +2179,15 @@ class PixieAuthHandler:
                     updated_runtime.mode,
                     updated_runtime.is_on,
                     updated_runtime.timer_total_seconds,
+                    updated_runtime.timer_remaining_seconds,
+                )
+            elif rec.capabilities.is_fan:
+                self._log_debug(
+                    "Fan state after update: dev_id=%s speed=%s light=%s timer_kind=%s remaining=%s",
+                    dev_id,
+                    updated_runtime.fan_speed,
+                    updated_runtime.fan_light_level,
+                    updated_runtime.fan_timer_kind,
                     updated_runtime.timer_remaining_seconds,
                 )
 
@@ -3816,6 +3952,14 @@ class PixieAuthHandler:
         command_indicator_led_action = command_kwargs.get("command_indicator_led_action")
         command_indicator_led_on = command_kwargs.get("command_indicator_led_on")
         command_indicator_led_off = command_kwargs.get("command_indicator_led_off")
+        command_fan_action = command_kwargs.get("command_fan_action")
+        command_fan_speed = command_kwargs.get("command_fan_speed")
+        command_fan_light_level = command_kwargs.get("command_fan_light_level")
+        command_fan_light_temperature = command_kwargs.get("command_fan_light_temperature")
+        command_fan_direction = command_kwargs.get("command_fan_direction")
+        command_fan_sleep_duration = command_kwargs.get("command_fan_sleep_duration")
+        command_fan_sleep_fade = command_kwargs.get("command_fan_sleep_fade")
+        command_fan_sleep_expected_result = command_kwargs.get("command_fan_sleep_expected_result")
         command_target = command_kwargs.get("command_target")
 
         if command_indicator_led_action == "set":
@@ -3827,6 +3971,36 @@ class PixieAuthHandler:
                     "off": command_indicator_led_off,
                 },
             )
+
+        if rec.capabilities.is_fan:
+            fan_action = str(command_fan_action or "").strip().lower()
+            if command_fan_speed is not None:
+                return PixieOptimisticUpdateIntent(device_id=device_id, target="fan_speed", value=int(command_fan_speed))
+            if command_fan_light_level is not None:
+                return PixieOptimisticUpdateIntent(device_id=device_id, target="fan_light", value=int(command_fan_light_level))
+            if command_fan_light_temperature is not None:
+                return PixieOptimisticUpdateIntent(device_id=device_id, target="fan_light_temperature", value=str(command_fan_light_temperature))
+            if command_fan_direction is not None:
+                return PixieOptimisticUpdateIntent(device_id=device_id, target="fan_direction", value=str(command_fan_direction))
+            if fan_action == "start_sleep_timer":
+                return PixieOptimisticUpdateIntent(device_id=device_id, target="fan_sleep_timer", value=True)
+            if fan_action == "cancel_timer":
+                return PixieOptimisticUpdateIntent(device_id=device_id, target="fan_sleep_timer", value=False)
+            if fan_action == "set_sleep_settings":
+                return PixieOptimisticUpdateIntent(
+                    device_id=device_id,
+                    target="fan_sleep_settings",
+                    value={
+                        "enabled": bool(command_kwargs.get("command_fan_sleep_enabled")),
+                        "duration": command_fan_sleep_duration,
+                        "fade": command_fan_sleep_fade,
+                        "expected": command_fan_sleep_expected_result,
+                    },
+                )
+            if fan_action == "refresh_sleep_settings":
+                return None
+            if fan_action == "poll_timer":
+                return PixieOptimisticUpdateIntent(device_id=device_id, target="timer_poll_stamp")
 
         if command_gate_param is not None:
             target = str(command_gate_param)
@@ -3989,6 +4163,14 @@ class PixieAuthHandler:
         command_indicator_led_action = command_kwargs.get("command_indicator_led_action")
         command_indicator_led_on = command_kwargs.get("command_indicator_led_on")
         command_indicator_led_off = command_kwargs.get("command_indicator_led_off")
+        command_fan_action = command_kwargs.get("command_fan_action")
+        command_fan_speed = command_kwargs.get("command_fan_speed")
+        command_fan_light_level = command_kwargs.get("command_fan_light_level")
+        command_fan_light_temperature = command_kwargs.get("command_fan_light_temperature")
+        command_fan_direction = command_kwargs.get("command_fan_direction")
+        command_fan_sleep_duration = command_kwargs.get("command_fan_sleep_duration")
+        command_fan_sleep_fade = command_kwargs.get("command_fan_sleep_fade")
+        command_fan_sleep_expected_result = command_kwargs.get("command_fan_sleep_expected_result")
         command_target = command_kwargs.get("command_target")
         command_raw_hexes = command_kwargs.get("command_raw_hexes")
         command_raw_target = str(command_kwargs.get("command_raw_target") or "raw")
@@ -4087,6 +4269,147 @@ class PixieAuthHandler:
                 packets=tuple(packets),
                 optimistic_intent=None,
                 result={"target": command_raw_target, "device_id": device_id, "packets": len(packets)},
+            )
+
+        if command_fan_action is not None or any(
+            value is not None
+            for value in (
+                command_fan_speed,
+                command_fan_light_level,
+                command_fan_light_temperature,
+                command_fan_direction,
+                command_fan_sleep_duration,
+                command_fan_sleep_fade,
+                command_fan_sleep_expected_result,
+            )
+        ):
+            if not rec.capabilities.is_fan:
+                raise PixieAuthError(f"Model {rec.model_no} does not support fan commands")
+            action = str(command_fan_action or "").strip().lower()
+            packets: list[PixieCoreCommandPacket] = []
+            target = "fan"
+            ka = {"counter_attr": "_timer_command_counter", "minimum_counter": 0x01}
+
+            def _fan_packet(payload: bytes, *, delay_after: float = 0.0) -> None:
+                packets.append(_packet(
+                    self._build_shifted_prefix_command_hex(device_id, opcode=b"\xc1\x69\x69", payload=payload, **ka),
+                    delay_after=delay_after,
+                    log_message="Sending fan command: dev_id=%s action=%s payload=%s",
+                    log_args=(device_id, action or target, payload.hex()),
+                ))
+
+            if action == "refresh_sleep_settings":
+                target = "fan_sleep_settings_refresh"
+                packets.append(_packet(
+                    self._build_shifted_prefix_command_hex(device_id, opcode=b"\xfb\x6b\x69", payload=b"\x01", **ka),
+                    tcp_repeat=1,
+                    log_message="Requesting fan sleep settings: dev_id=%s opcode=fb6b69",
+                    log_args=(device_id,),
+                ))
+            elif action == "set_sleep_settings":
+                if not rec.capabilities.supports_fan_sleep_config:
+                    raise PixieAuthError(f"Model {rec.model_no} does not support sleep settings")
+                duration = command_fan_sleep_duration
+                expected = command_fan_sleep_expected_result
+                if duration is None:
+                    duration = rec.runtime.fan_sleep_duration_minutes
+                if expected is None:
+                    expected = rec.runtime.fan_sleep_expected_result
+                if duration is None or expected is None:
+                    raise PixieAuthError("Sleep settings are not known; refresh sleep settings first")
+                duration = max(5, min(1439, int(duration)))
+                expected = max(0, min(9, int(expected)))
+                enabled = bool(command_kwargs.get("command_fan_sleep_enabled"))
+                fade = bool(command_fan_sleep_fade) if command_fan_sleep_fade is not None else bool(rec.runtime.fan_sleep_fade)
+                sleep_mode = 1 if not enabled else 3 if fade else 2
+                # Captured app packet: FB 6B 69 02 00 04 <expected*16>
+                # <minutes:be16> 00 <mode>.
+                payload = (
+                    b"\x02\x00\x04"
+                    + bytes([expected << 4])
+                    + duration.to_bytes(2, "big")
+                    + b"\x00"
+                    + bytes([sleep_mode])
+                )
+                target = "fan_sleep_settings"
+                packets.append(_packet(
+                    self._build_shifted_prefix_command_hex(device_id, opcode=b"\xfb\x6b\x69", payload=payload, **ka),
+                    tcp_repeat=1,
+                    log_message="Setting fan sleep configuration: dev_id=%s enabled=%s duration=%s fade=%s expected_result=%s",
+                    log_args=(device_id, enabled, duration, fade, expected),
+                ))
+            elif action == "start_sleep_timer":
+                if not rec.runtime.is_on:
+                    raise PixieAuthError("The fan must be running before starting a timer")
+                if not rec.runtime.fan_sleep_enabled:
+                    raise PixieAuthError("Sleep Mode must be enabled before starting the sleep timer")
+                target = "fan_sleep_timer"
+                _fan_packet(b"\x04\x00\xff\x00\x00\x00\x0f\x63\x00\x00", delay_after=0.2)
+                packets.append(_packet(self._build_fan_timer_poll_command_hex(device_id), tcp_repeat=1))
+            elif action == "poll_timer":
+                target = "fan_timer_poll"
+                packets.append(_packet(
+                    self._build_fan_timer_poll_command_hex(device_id),
+                    tcp_repeat=1,
+                    log_message="Polling fan timer: dev_id=%s opcode=f96b69",
+                    log_args=(device_id,),
+                ))
+            elif action == "cancel_timer":
+                target = "fan_sleep_timer"
+                _fan_packet(b"\x04\x00\x00\x00\x00\x00\x0f\x63\x00\x00")
+            elif command_fan_speed is not None:
+                speed = max(0, min(9, int(command_fan_speed)))
+                target = "fan_speed"
+                _fan_packet(bytes([0x02, 0x00, speed, 0x00, 0x00, 0x00, 0x0F, 0x63, 0x00, 0x00]))
+            elif command_fan_light_level is not None:
+                level = max(0, min(9, int(command_fan_light_level)))
+                target = "fan_light"
+                _fan_packet(bytes([0x01, 0x00, level, 0x00, 0x00, 0x00, 0x0F, 0x63, 0x00, 0x00]))
+            elif command_fan_light_temperature is not None:
+                temp_values = {"white": 0, "daylight": 1, "warm": 2}
+                temperature = str(command_fan_light_temperature).lower()
+                if temperature not in temp_values:
+                    raise PixieAuthError(f"Unsupported fan light temperature: {temperature}")
+                target = "fan_light_temperature"
+                _fan_packet(bytes([
+                    0x06,
+                    0x00,
+                    temp_values[temperature],
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x0F,
+                    0x63,
+                    0x00,
+                    0x00,
+                ]))
+            elif command_fan_direction is not None:
+                if not rec.runtime.is_on:
+                    raise PixieAuthError("The fan must be running before changing direction")
+                direction = str(command_fan_direction).lower()
+                if direction not in {"summer", "winter"}:
+                    raise PixieAuthError(f"Unsupported fan direction: {direction}")
+                target = "fan_direction"
+                _fan_packet(bytes([
+                    0x03,
+                    0x00,
+                    1 if direction == "winter" else 0,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x0F,
+                    0x63,
+                    0x00,
+                    0x00,
+                ]))
+            else:
+                raise PixieAuthError("Missing fan command action or value")
+            return PixieCoreCommandPlan(
+                device_id=device_id,
+                target=target,
+                packets=tuple(packets),
+                optimistic_intent=optimistic_intent,
+                result={"target": target, "device_id": device_id},
             )
 
         if command_power_meter_action == "poll":
@@ -4725,6 +5048,35 @@ class PixieAuthHandler:
                 update_kwargs["br"] = brightness_level
             update_kwargs["effect"] = effect_name
             update_kwargs["effect_speed"] = effect_speed
+        elif target == "fan_speed":
+            update_kwargs["fan_speed"] = int(value) if value is not None else None
+        elif target == "fan_light":
+            update_kwargs["fan_light_level"] = int(value) if value is not None else None
+        elif target == "fan_light_temperature":
+            update_kwargs["fan_light_temperature"] = str(value) if value is not None else None
+        elif target == "fan_direction":
+            update_kwargs["fan_direction"] = str(value) if value is not None else None
+        elif target == "fan_sleep_timer":
+            if value:
+                duration_minutes = rec.runtime.fan_sleep_duration_minutes
+                update_kwargs.update({
+                    "fan_timer_kind": "sleep",
+                    "timer_total_seconds": duration_minutes * 60 if isinstance(duration_minutes, int) else None,
+                    "timer_remaining_seconds": duration_minutes * 60 if isinstance(duration_minutes, int) else None,
+                    "last_timer_poll_at": time.time(),
+                    "timer_needs_poll": True,
+                })
+            else:
+                update_kwargs.update({"fan_timer_kind": "none", "timer_remaining_seconds": None})
+        elif target == "fan_sleep_settings":
+            if isinstance(value, dict):
+                update_kwargs["fan_sleep_enabled"] = bool(value.get("enabled"))
+                if value.get("duration") is not None:
+                    update_kwargs["fan_sleep_duration_minutes"] = int(value["duration"])
+                if value.get("fade") is not None:
+                    update_kwargs["fan_sleep_fade"] = bool(value["fade"])
+                if value.get("expected") is not None:
+                    update_kwargs["fan_sleep_expected_result"] = int(value["expected"])
         elif target == "cover":
             pass
         elif target == "timer_relay":
@@ -5201,6 +5553,15 @@ class PixieAuthHandler:
             command_indicator_led_action: Optional[str] = None,
             command_indicator_led_on: Optional[int] = None,
             command_indicator_led_off: Optional[int] = None,
+            command_fan_action: Optional[str] = None,
+            command_fan_speed: Optional[int] = None,
+            command_fan_light_level: Optional[int] = None,
+            command_fan_light_temperature: Optional[str] = None,
+            command_fan_direction: Optional[str] = None,
+            command_fan_sleep_enabled: Optional[bool] = None,
+            command_fan_sleep_duration: Optional[int] = None,
+            command_fan_sleep_fade: Optional[bool] = None,
+            command_fan_sleep_expected_result: Optional[int] = None,
             command_raw_hexes: Optional[Tuple[str, ...]] = None,
             command_raw_target: Optional[str] = None,
             command_raw_repeat: int = 0,
@@ -5258,6 +5619,15 @@ class PixieAuthHandler:
                 "command_indicator_led_action": command_indicator_led_action,
                 "command_indicator_led_on": command_indicator_led_on,
                 "command_indicator_led_off": command_indicator_led_off,
+                "command_fan_action": command_fan_action,
+                "command_fan_speed": command_fan_speed,
+                "command_fan_light_level": command_fan_light_level,
+                "command_fan_light_temperature": command_fan_light_temperature,
+                "command_fan_direction": command_fan_direction,
+                "command_fan_sleep_enabled": command_fan_sleep_enabled,
+                "command_fan_sleep_duration": command_fan_sleep_duration,
+                "command_fan_sleep_fade": command_fan_sleep_fade,
+                "command_fan_sleep_expected_result": command_fan_sleep_expected_result,
                 "command_raw_hexes": command_raw_hexes,
                 "command_raw_target": command_raw_target,
                 "command_raw_repeat": command_raw_repeat,
@@ -6346,6 +6716,16 @@ class PixieAuthHandler:
             device_id,
             opcode=b"\xf9\x6b\x69",
             payload=payload,
+            counter_attr="_timer_command_counter",
+            minimum_counter=0x01,
+        )
+
+    def _build_fan_timer_poll_command_hex(self, device_id: int) -> str:
+        """Build the captured bare f96b69 fan timer-status query."""
+        return self._build_shifted_prefix_command_hex(
+            device_id,
+            opcode=b"\xf9\x6b\x69",
+            payload=b"",
             counter_attr="_timer_command_counter",
             minimum_counter=0x01,
         )

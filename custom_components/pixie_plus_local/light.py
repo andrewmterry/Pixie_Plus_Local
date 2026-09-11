@@ -81,6 +81,20 @@ def _iter_light_endpoints(inventory, device_id: int | None = None) -> list[Pixie
         record = inventory.devices_by_id[current_device_id]
         if device_id is not None and int(record.id) != int(device_id):
             continue
+        if record.capabilities.supports_fan_light:
+            endpoints.append(
+                PixieEndpoint(
+                    device_id=record.id,
+                    endpoint_key="fan_light",
+                    command_target="fan_light",
+                    entity_unique_id=endpoint_unique_identifier(record, "fan_light"),
+                    device_identifier=physical_device_identifier(record),
+                    device_name=record.name,
+                    via_device_identifier=gateway_identifier,
+                    entity_name="Light",
+                )
+            )
+            continue
         if not record.capabilities.is_light:
             continue
         endpoints.append(
@@ -109,7 +123,10 @@ async def async_setup_entry(
     if inventory is None:
         return
 
-    async_add_entities(PixiePlusLightEntity(runtime_data, endpoint) for endpoint in _iter_light_endpoints(inventory))
+    async_add_entities(
+        PixiePlusFanLightEntity(runtime_data, endpoint) if endpoint.endpoint_key == "fan_light" else PixiePlusLightEntity(runtime_data, endpoint)
+        for endpoint in _iter_light_endpoints(inventory)
+    )
 
     @callback
     def _async_add_device_entities(device_id: int) -> None:
@@ -118,7 +135,10 @@ async def async_setup_entry(
             return
         endpoints = _iter_light_endpoints(current_inventory, device_id=int(device_id))
         if endpoints:
-            async_add_entities(PixiePlusLightEntity(runtime_data, endpoint) for endpoint in endpoints)
+            async_add_entities(
+                PixiePlusFanLightEntity(runtime_data, endpoint) if endpoint.endpoint_key == "fan_light" else PixiePlusLightEntity(runtime_data, endpoint)
+                for endpoint in endpoints
+            )
 
     entry.async_on_unload(async_dispatcher_connect(hass, device_added_signal(entry), _async_add_device_entities))
 
@@ -333,5 +353,100 @@ class PixiePlusLightEntity(PixiePlusCoordinatorEntity, LightEntity):
                 command_device_id=self.record.id,
                 command_state=False,
             )
+        except Exception as err:
+            raise HomeAssistantError(str(err)) from err
+
+
+class PixiePlusFanLightEntity(PixiePlusCoordinatorEntity, LightEntity):
+    """The independently controlled light built into a Pixie fan."""
+
+    _attr_supported_color_modes = {ColorMode.COLOR_TEMP}
+
+    def __init__(self, runtime_data: PixiePlusConfigEntryRuntimeData, endpoint: PixieEndpoint) -> None:
+        super().__init__(runtime_data, endpoint, domain=DOMAIN)
+        temperatures = self._color_temperatures
+        if temperatures:
+            self._attr_min_color_temp_kelvin = min(temperatures.values())
+            self._attr_max_color_temp_kelvin = max(temperatures.values())
+
+    @property
+    def _color_temperatures(self) -> dict[str, int]:
+        """Return the fan's discrete temperature modes as nominal Kelvin values."""
+        return self.record.capabilities.fan_light_color_temp_kelvin
+
+    @property
+    def is_on(self) -> bool | None:
+        level = self.record.runtime.fan_light_level
+        return level > 0 if isinstance(level, int) else None
+
+    @property
+    def brightness(self) -> int | None:
+        level = self.record.runtime.fan_light_level
+        if not isinstance(level, int) or level <= 0:
+            return None
+        return max(1, min(255, round(level * 255 / 9)))
+
+    @property
+    def color_mode(self) -> ColorMode:
+        """The fan light always combines brightness with its temperature setting."""
+        return ColorMode.COLOR_TEMP
+
+    @property
+    def min_color_temp_kelvin(self) -> int | None:
+        temperatures = self._color_temperatures
+        return min(temperatures.values()) if temperatures else None
+
+    @property
+    def max_color_temp_kelvin(self) -> int | None:
+        temperatures = self._color_temperatures
+        return max(temperatures.values()) if temperatures else None
+
+    @property
+    def color_temp_kelvin(self) -> int | None:
+        temperature = self.record.runtime.fan_light_temperature
+        return self._color_temperatures.get(temperature) if temperature is not None else None
+
+    def _temperature_from_kelvin(self, kelvin: int) -> str:
+        """Snap Home Assistant's continuous Kelvin input to a device mode."""
+        temperatures = self._color_temperatures
+        if not temperatures:
+            raise HomeAssistantError("Fan light temperature modes are unavailable")
+        return min(temperatures, key=lambda name: abs(temperatures[name] - kelvin))
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        brightness = kwargs.get(ATTR_BRIGHTNESS)
+        color_temp_kelvin = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
+        if brightness is None:
+            level = self.record.runtime.last_fan_light_level or self.record.runtime.fan_light_level or 9
+        else:
+            level = max(1, min(9, round(int(brightness) * 9 / 255)))
+        temperature = (
+            self._temperature_from_kelvin(int(color_temp_kelvin))
+            if color_temp_kelvin is not None
+            else None
+        )
+        try:
+            # The app only changes this fan's temperature while its light is on.
+            # Restore/set a non-zero level before sending a requested temperature.
+            if brightness is not None or (temperature is not None and not self.is_on) or (
+                brightness is None and temperature is None and not self.is_on
+            ):
+                await self.runtime_data.async_send_local_command(
+                    self.hass,
+                    command_device_id=self.record.id,
+                    command_fan_light_level=level,
+                )
+            if temperature is not None:
+                await self.runtime_data.async_send_local_command(
+                    self.hass,
+                    command_device_id=self.record.id,
+                    command_fan_light_temperature=temperature,
+                )
+        except Exception as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        try:
+            await self.runtime_data.async_send_local_command(self.hass, command_device_id=self.record.id, command_fan_light_level=0)
         except Exception as err:
             raise HomeAssistantError(str(err)) from err

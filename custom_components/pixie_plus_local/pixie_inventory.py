@@ -106,6 +106,7 @@ def derive_is_on_from_state(
     relay: Optional[int] = None,
     armed: Optional[bool] = None,
     contact_active: Optional[bool] = None,
+    fan_speed: Optional[int] = None,
 ) -> Optional[bool]:
     """Derive an on/off state from the current runtime fields.
 
@@ -116,6 +117,9 @@ def derive_is_on_from_state(
     """
     if capabilities.supports_cover:
         return None
+
+    if capabilities.is_fan and isinstance(fan_speed, int):
+        return fan_speed > 0
 
     # Timer switch devices (e.g., 2113): br=0 means off, br>0 means on
     if capabilities.supports_timer and isinstance(br, int):
@@ -230,6 +234,17 @@ class RuntimeState:
     last_timer_poll_requested_at: Optional[float] = None
     timer_needs_poll: bool = False
     local_timer_restart_at: Optional[float] = None
+    fan_speed: Optional[int] = None
+    last_fan_speed: Optional[int] = None
+    fan_light_level: Optional[int] = None
+    last_fan_light_level: Optional[int] = None
+    fan_light_temperature: Optional[str] = None
+    fan_direction: Optional[str] = None
+    fan_timer_kind: str = "none"
+    fan_sleep_enabled: Optional[bool] = None
+    fan_sleep_duration_minutes: Optional[int] = None
+    fan_sleep_fade: Optional[bool] = None
+    fan_sleep_expected_result: Optional[int] = None
     left_power_w: Optional[float] = None
     right_power_w: Optional[float] = None
     left_energy_kwh: Optional[float] = None
@@ -293,6 +308,17 @@ class RuntimeState:
             "last_timer_poll_at": self.last_timer_poll_at,
             "last_timer_poll_requested_at": self.last_timer_poll_requested_at,
             "timer_needs_poll": self.timer_needs_poll,
+            "fan_speed": self.fan_speed,
+            "last_fan_speed": self.last_fan_speed,
+            "fan_light_level": self.fan_light_level,
+            "last_fan_light_level": self.last_fan_light_level,
+            "fan_light_temperature": self.fan_light_temperature,
+            "fan_direction": self.fan_direction,
+            "fan_timer_kind": self.fan_timer_kind,
+            "fan_sleep_enabled": self.fan_sleep_enabled,
+            "fan_sleep_duration_minutes": self.fan_sleep_duration_minutes,
+            "fan_sleep_fade": self.fan_sleep_fade,
+            "fan_sleep_expected_result": self.fan_sleep_expected_result,
             "hold_time_seconds": self.hold_time_seconds,
             "brightness_threshold": self.brightness_threshold,
             "motion_sensitivity": self.motion_sensitivity,
@@ -353,6 +379,17 @@ class RuntimeState:
             last_timer_poll_at=data.get("last_timer_poll_at"),
             last_timer_poll_requested_at=data.get("last_timer_poll_requested_at"),
             timer_needs_poll=bool(data.get("timer_needs_poll", False)),
+            fan_speed=_normalize_optional_int(data.get("fan_speed")),
+            last_fan_speed=_normalize_optional_int(data.get("last_fan_speed")),
+            fan_light_level=_normalize_optional_int(data.get("fan_light_level")),
+            last_fan_light_level=_normalize_optional_int(data.get("last_fan_light_level")),
+            fan_light_temperature=str(data.get("fan_light_temperature")) if data.get("fan_light_temperature") in {"warm", "white", "daylight"} else None,
+            fan_direction=str(data.get("fan_direction")) if data.get("fan_direction") in {"summer", "winter"} else None,
+            fan_timer_kind=str(data.get("fan_timer_kind") or "none"),
+            fan_sleep_enabled=_normalize_optional_bool(data.get("fan_sleep_enabled")),
+            fan_sleep_duration_minutes=_normalize_optional_int(data.get("fan_sleep_duration_minutes")),
+            fan_sleep_fade=_normalize_optional_bool(data.get("fan_sleep_fade")),
+            fan_sleep_expected_result=_normalize_optional_int(data.get("fan_sleep_expected_result")),
             hold_time_seconds=_normalize_optional_int(data.get("hold_time_seconds")),
             brightness_threshold=_normalize_optional_int(data.get("brightness_threshold")),
             motion_sensitivity=_normalize_optional_int(data.get("motion_sensitivity")),
@@ -424,6 +461,15 @@ class DeviceStateStore:
         last_timer_poll_at: Any = STATE_UNSET,
         last_timer_poll_requested_at: Any = STATE_UNSET,
         timer_needs_poll: Any = STATE_UNSET,
+        fan_speed: Any = STATE_UNSET,
+        fan_light_level: Any = STATE_UNSET,
+        fan_light_temperature: Any = STATE_UNSET,
+        fan_direction: Any = STATE_UNSET,
+        fan_timer_kind: Any = STATE_UNSET,
+        fan_sleep_enabled: Any = STATE_UNSET,
+        fan_sleep_duration_minutes: Any = STATE_UNSET,
+        fan_sleep_fade: Any = STATE_UNSET,
+        fan_sleep_expected_result: Any = STATE_UNSET,
         left_power_w: Any = STATE_UNSET,
         right_power_w: Any = STATE_UNSET,
         left_energy_kwh: Any = STATE_UNSET,
@@ -512,6 +558,28 @@ class DeviceStateStore:
             runtime.last_timer_poll_requested_at = last_timer_poll_requested_at
         if timer_needs_poll is not STATE_UNSET:
             runtime.timer_needs_poll = bool(timer_needs_poll)
+        if fan_speed is not STATE_UNSET:
+            runtime.fan_speed = _normalize_optional_int(fan_speed)
+            if isinstance(runtime.fan_speed, int) and runtime.fan_speed > 0:
+                runtime.last_fan_speed = runtime.fan_speed
+        if fan_light_level is not STATE_UNSET:
+            runtime.fan_light_level = _normalize_optional_int(fan_light_level)
+            if isinstance(runtime.fan_light_level, int) and runtime.fan_light_level > 0:
+                runtime.last_fan_light_level = runtime.fan_light_level
+        if fan_light_temperature is not STATE_UNSET:
+            runtime.fan_light_temperature = str(fan_light_temperature) if fan_light_temperature in {"warm", "white", "daylight"} else None
+        if fan_direction is not STATE_UNSET:
+            runtime.fan_direction = str(fan_direction) if fan_direction in {"summer", "winter"} else None
+        if fan_timer_kind is not STATE_UNSET:
+            runtime.fan_timer_kind = str(fan_timer_kind) if fan_timer_kind in {"none", "sleep"} else "none"
+        if fan_sleep_enabled is not STATE_UNSET:
+            runtime.fan_sleep_enabled = _normalize_optional_bool(fan_sleep_enabled)
+        if fan_sleep_duration_minutes is not STATE_UNSET:
+            runtime.fan_sleep_duration_minutes = _normalize_optional_int(fan_sleep_duration_minutes)
+        if fan_sleep_fade is not STATE_UNSET:
+            runtime.fan_sleep_fade = _normalize_optional_bool(fan_sleep_fade)
+        if fan_sleep_expected_result is not STATE_UNSET:
+            runtime.fan_sleep_expected_result = _normalize_optional_int(fan_sleep_expected_result)
         if left_power_w is not STATE_UNSET:
             runtime.left_power_w = None if left_power_w is None else float(left_power_w)
         if right_power_w is not STATE_UNSET:
@@ -593,6 +661,7 @@ class DeviceStateStore:
             runtime.relay,
             runtime.armed,
             runtime.contact_active,
+            runtime.fan_speed,
         )
         runtime.last_source = source
         runtime.last_updated_ms = updated_ms if updated_ms is not None else int(datetime.now().timestamp() * 1000)
@@ -646,6 +715,12 @@ class DeviceStateStore:
             update_outlet_child_lock = STATE_UNSET
             update_plug_socket_led_indicator = STATE_UNSET
             update_plug_usb_led_indicator = STATE_UNSET
+            update_fan_speed = STATE_UNSET
+            update_fan_light_level = STATE_UNSET
+            update_fan_light_temperature = STATE_UNSET
+            update_fan_direction = STATE_UNSET
+            update_fan_sleep_enabled = STATE_UNSET
+            update_fan_timer_kind = STATE_UNSET
 
             # Handle mode/relay for sensor-capable devices.
             mode_val = rec_data.get("mode")
@@ -658,7 +733,21 @@ class DeviceStateStore:
 
             br_obj = rec_data.get("br")
             if isinstance(br_obj, dict):
-                if inv_rec.capabilities.supports_sensor:
+                if inv_rec.capabilities.is_fan:
+                    raw_value = _normalize_optional_int(br_obj.get("raw"))
+                    tail = _normalize_optional_int(rec_data.get("rssi_raw"))
+                    if isinstance(raw_value, int) and isinstance(tail, int):
+                        update_fan_speed = (raw_value >> 4) & 0x0F
+                        update_fan_light_level = raw_value & 0x0F
+                        update_fan_light_temperature = "daylight" if tail & 0x08 else "warm" if tail & 0x10 else "white"
+                        update_fan_direction = "winter" if tail & 0x01 else "summer"
+                        update_fan_sleep_enabled = bool(tail & 0x40)
+                        update_fan_timer_kind = "sleep" if tail & 0x04 else "none"
+                        LOGGER.debug(
+                            "Fan bulk runtime update: dev_id=%s value=0x%02x tail=0x%02x speed=%s light=%s timer=%s",
+                            dev_id, raw_value, tail, update_fan_speed, update_fan_light_level, update_fan_timer_kind,
+                        )
+                elif inv_rec.capabilities.supports_sensor:
                     raw_value = br_obj.get("raw")
                     if isinstance(raw_value, int):
                         interpreted = decode_value_byte_for_capabilities(inv_rec.capabilities, raw_value)
@@ -844,6 +933,12 @@ class DeviceStateStore:
                 outlet_child_lock=update_outlet_child_lock,
                 plug_socket_led_indicator=update_plug_socket_led_indicator,
                 plug_usb_led_indicator=update_plug_usb_led_indicator,
+                fan_speed=update_fan_speed,
+                fan_light_level=update_fan_light_level,
+                fan_light_temperature=update_fan_light_temperature,
+                fan_direction=update_fan_direction,
+                fan_sleep_enabled=update_fan_sleep_enabled,
+                fan_timer_kind=update_fan_timer_kind,
                 updated_ms=now_ms,
             )
             if runtime is None:
@@ -914,6 +1009,13 @@ class DeviceCapabilities:
     supports_motion_sensor: bool = False
     supports_photocell_sensor: bool = False
     supports_timer: bool = False
+    is_fan: bool = False
+    supports_fan_light: bool = False
+    supports_fan_timer: bool = False
+    supports_fan_sleep_config: bool = False
+    supports_fan_fade: bool = False
+    supports_fan_expected_result: bool = False
+    fan_light_color_temp_kelvin: Dict[str, int] = field(default_factory=dict)
     supports_switch_indicator_led: bool = False
     timer_modes: List[str] = field(default_factory=list)
     supports_hold_time: bool = False
@@ -959,6 +1061,13 @@ class DeviceCapabilities:
             "supports_motion_sensor": self.supports_motion_sensor,
             "supports_photocell_sensor": self.supports_photocell_sensor,
             "supports_timer": self.supports_timer,
+            "is_fan": self.is_fan,
+            "supports_fan_light": self.supports_fan_light,
+            "supports_fan_timer": self.supports_fan_timer,
+            "supports_fan_sleep_config": self.supports_fan_sleep_config,
+            "supports_fan_fade": self.supports_fan_fade,
+            "supports_fan_expected_result": self.supports_fan_expected_result,
+            "fan_light_color_temp_kelvin": dict(self.fan_light_color_temp_kelvin),
             "supports_switch_indicator_led": self.supports_switch_indicator_led,
             "timer_modes": list(self.timer_modes),
             "supports_hold_time": self.supports_hold_time,
@@ -1006,6 +1115,16 @@ class DeviceCapabilities:
             supports_motion_sensor=bool(data.get("supports_motion_sensor", False)),
             supports_photocell_sensor=bool(data.get("supports_photocell_sensor", False)),
             supports_timer=bool(data.get("supports_timer", False)),
+            is_fan=bool(data.get("is_fan", False)),
+            supports_fan_light=bool(data.get("supports_fan_light", False)),
+            supports_fan_timer=bool(data.get("supports_fan_timer", False)),
+            supports_fan_sleep_config=bool(data.get("supports_fan_sleep_config", False)),
+            supports_fan_fade=bool(data.get("supports_fan_fade", False)),
+            supports_fan_expected_result=bool(data.get("supports_fan_expected_result", False)),
+            fan_light_color_temp_kelvin={
+                str(name): int(kelvin)
+                for name, kelvin in dict(data.get("fan_light_color_temp_kelvin") or {}).items()
+            },
             supports_switch_indicator_led=bool(data.get("supports_switch_indicator_led", False)),
             timer_modes=list(data.get("timer_modes") or []),
             supports_hold_time=bool(data.get("supports_hold_time", False)),
@@ -1079,6 +1198,18 @@ class DeviceRecord:
             capabilities.supports_power_metering = True
         if model_caps.get("supports_switch_indicator_led", False):
             capabilities.supports_switch_indicator_led = True
+        for capability_name in (
+            "is_fan",
+            "supports_fan_light",
+            "supports_fan_timer",
+            "supports_fan_sleep_config",
+            "supports_fan_fade",
+            "supports_fan_expected_result",
+        ):
+            if model_caps.get(capability_name, False):
+                setattr(capabilities, capability_name, True)
+        if not capabilities.fan_light_color_temp_kelvin:
+            capabilities.fan_light_color_temp_kelvin = dict(model_caps.get("fan_light_color_temp_kelvin") or {})
         if capabilities.supports_contact_sensor and not capabilities.contact_sensor_type:
             capabilities.contact_sensor_type = str(model_caps.get("contact_sensor_type", "standard_contact"))
         if capabilities.supports_cover and not capabilities.cover_type:
@@ -1174,6 +1305,13 @@ class PixieInventory:
         cap.supports_motion_sensor = model_caps["supports_motion_sensor"]
         cap.supports_photocell_sensor = model_caps["supports_photocell_sensor"]
         cap.supports_timer = model_caps["supports_timer"]
+        cap.is_fan = model_caps["is_fan"]
+        cap.supports_fan_light = model_caps["supports_fan_light"]
+        cap.supports_fan_timer = model_caps["supports_fan_timer"]
+        cap.supports_fan_sleep_config = model_caps["supports_fan_sleep_config"]
+        cap.supports_fan_fade = model_caps["supports_fan_fade"]
+        cap.supports_fan_expected_result = model_caps["supports_fan_expected_result"]
+        cap.fan_light_color_temp_kelvin = dict(model_caps["fan_light_color_temp_kelvin"])
         cap.supports_switch_indicator_led = model_caps["supports_switch_indicator_led"]
         cap.timer_modes = model_caps["timer_modes"]
         cap.supports_hold_time = model_caps["supports_hold_time"]
@@ -1308,7 +1446,9 @@ class PixieInventory:
     @staticmethod
     def _default_ble_name(model_no: str, device_id: int, capabilities: DeviceCapabilities) -> str:
         """Return a Pixie-app-like default name for a BLE-only discovered device."""
-        if capabilities.supports_gate:
+        if capabilities.is_fan:
+            label = "Fan"
+        elif capabilities.supports_gate:
             label = "Gate"
         elif capabilities.supports_timer:
             label = "Timer"

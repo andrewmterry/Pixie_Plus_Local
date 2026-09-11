@@ -55,6 +55,7 @@ The current code includes support for these models:
 - Dual Relay Control - PC206DR/R/BTAM
 - Blind and Signal Control - PC206BS/R/BTAM
 - Contact Sensor Transceiver - PC100CS/R/BTAM
+- Hunter Pacific ceiling fan
 
 ## Installation
 

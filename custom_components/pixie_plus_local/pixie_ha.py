@@ -926,6 +926,9 @@ async def async_cleanup_orphaned_registry_entries(
         "plug_socket_led_indicator", "plug_usb_led_indicator",
         "plug_all_devices_control", "plug_led_refresh_settings",
         "sensor_led_indicator", "learn_brightness_threshold",
+        "fan", "fan_light", "fan_sleep_timer",
+        "fan_sleep_enabled", "fan_sleep_duration", "fan_sleep_fade",
+        "fan_sleep_expected_result", "fan_sleep_refresh_settings",
     )
     parent_identifier = parent_device_identifier(inventory)
     valid_entity_ids: set[str] = set()
@@ -1200,9 +1203,13 @@ class PixiePlusRuntimeCoordinator(DataUpdateCoordinator[PixieInventory]):
             now = _time.time()
             for device_id in sorted(inventory.devices_by_id):
                 rec = inventory.devices_by_id[device_id]
-                if not rec.capabilities.supports_timer:
+                if not (rec.capabilities.supports_timer or rec.capabilities.supports_fan_timer):
                     continue
-                if rec.runtime.mode != 1 or not rec.runtime.is_on:
+                if rec.capabilities.is_fan:
+                    timer_is_active = rec.runtime.fan_timer_kind == "sleep" and rec.runtime.is_on
+                else:
+                    timer_is_active = rec.runtime.mode == 1 and rec.runtime.is_on
+                if not timer_is_active:
                     continue
                 last_poll_markers = [
                     value
@@ -1220,7 +1227,7 @@ class PixiePlusRuntimeCoordinator(DataUpdateCoordinator[PixieInventory]):
                     self.runtime_manager.async_send_local_command(
                         self.hass,
                         command_device_id=device_id,
-                        command_timer_action="poll",
+                        **({"command_fan_action": "poll_timer"} if rec.capabilities.is_fan else {"command_timer_action": "poll"}),
                     )
                 )
                 LOGGER.debug("%sQueued timer poll for device %s", self.runtime_manager._log_prefix, device_id)
@@ -2080,12 +2087,12 @@ class PixiePlusConfigEntryRuntimeData(PixieProvisioningMixin):
         """Schedule immediate timer polls requested by newly applied runtime state."""
         for device_id in sorted(inventory.devices_by_id):
             rec = inventory.devices_by_id[device_id]
-            if rec.capabilities.supports_timer and rec.runtime.timer_needs_poll:
+            if (rec.capabilities.supports_timer or rec.capabilities.supports_fan_timer) and rec.runtime.timer_needs_poll:
                 rec.runtime.timer_needs_poll = False
                 command_coro = self.async_send_local_command(
                     self.coordinator.hass,
                     command_device_id=device_id,
-                    command_timer_action="poll",
+                    **({"command_fan_action": "poll_timer"} if rec.capabilities.is_fan else {"command_timer_action": "poll"}),
                 )
                 if from_thread:
                     self.coordinator.hass.loop.call_soon_threadsafe(

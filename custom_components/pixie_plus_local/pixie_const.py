@@ -7,7 +7,7 @@ from datetime import timedelta
 DOMAIN = "pixie_plus_local"
 MANUFACTURER = "SAL - Pixie Plus"
 INTEGRATION_TITLE = "Pixie Plus Local"
-PLATFORMS: tuple[str, ...] = ("light", "switch", "cover", "select", "binary_sensor", "button", "number", "sensor")
+PLATFORMS: tuple[str, ...] = ("light", "fan", "switch", "cover", "select", "binary_sensor", "button", "number", "sensor")
 
 CONF_HOME_ID = "home_id"
 CONF_HOME_NAME = "home_name"

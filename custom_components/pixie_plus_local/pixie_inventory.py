@@ -1208,7 +1208,12 @@ class DeviceRecord:
         ):
             if model_caps.get(capability_name, False):
                 setattr(capabilities, capability_name, True)
-        if not capabilities.fan_light_color_temp_kelvin:
+        for capability_name in model_caps.get("force_disabled_capabilities", []):
+            if hasattr(capabilities, capability_name):
+                setattr(capabilities, capability_name, False)
+        if not capabilities.supports_fan_light:
+            capabilities.fan_light_color_temp_kelvin = {}
+        elif not capabilities.fan_light_color_temp_kelvin:
             capabilities.fan_light_color_temp_kelvin = dict(model_caps.get("fan_light_color_temp_kelvin") or {})
         if capabilities.supports_contact_sensor and not capabilities.contact_sensor_type:
             capabilities.contact_sensor_type = str(model_caps.get("contact_sensor_type", "standard_contact"))

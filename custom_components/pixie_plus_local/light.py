@@ -28,6 +28,8 @@ from .pixie_ha import (
     PixiePlusCoordinatorEntity,
     device_added_signal,
     endpoint_unique_identifier,
+    expose_onoff_smart_switches_as_switches,
+    is_onoff_smart_switch_light,
     parent_device_identifier,
     physical_device_identifier,
 )
@@ -73,7 +75,12 @@ def _kelvin_to_raw_cct(kelvin: int, min_kelvin: int, max_kelvin: int, raw_min: i
     return int(round(raw_min + ((raw_max - raw_min) * fraction)))
 
 
-def _iter_light_endpoints(inventory, device_id: int | None = None) -> list[PixieEndpoint]:
+def _iter_light_endpoints(
+    inventory,
+    *,
+    expose_onoff_switches_as_switches: bool = False,
+    device_id: int | None = None,
+) -> list[PixieEndpoint]:
     """Return light endpoints from inventory."""
     gateway_identifier = parent_device_identifier(inventory)
     endpoints: list[PixieEndpoint] = []
@@ -94,6 +101,8 @@ def _iter_light_endpoints(inventory, device_id: int | None = None) -> list[Pixie
                     entity_name="Light",
                 )
             )
+            continue
+        if expose_onoff_switches_as_switches and is_onoff_smart_switch_light(record.capabilities):
             continue
         if not record.capabilities.is_light:
             continue
@@ -123,9 +132,13 @@ async def async_setup_entry(
     if inventory is None:
         return
 
+    expose_as_switches = expose_onoff_smart_switches_as_switches(entry)
     async_add_entities(
         PixiePlusFanLightEntity(runtime_data, endpoint) if endpoint.endpoint_key == "fan_light" else PixiePlusLightEntity(runtime_data, endpoint)
-        for endpoint in _iter_light_endpoints(inventory)
+        for endpoint in _iter_light_endpoints(
+            inventory,
+            expose_onoff_switches_as_switches=expose_as_switches,
+        )
     )
 
     @callback
@@ -133,7 +146,11 @@ async def async_setup_entry(
         current_inventory = runtime_data.pixie_runtime.inventory
         if current_inventory is None:
             return
-        endpoints = _iter_light_endpoints(current_inventory, device_id=int(device_id))
+        endpoints = _iter_light_endpoints(
+            current_inventory,
+            expose_onoff_switches_as_switches=expose_as_switches,
+            device_id=int(device_id),
+        )
         if endpoints:
             async_add_entities(
                 PixiePlusFanLightEntity(runtime_data, endpoint) if endpoint.endpoint_key == "fan_light" else PixiePlusLightEntity(runtime_data, endpoint)

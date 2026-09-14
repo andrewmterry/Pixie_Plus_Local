@@ -20,6 +20,8 @@ from .pixie_ha import (
     child_device_identifier,
     device_added_signal,
     endpoint_unique_identifier,
+    expose_onoff_smart_switches_as_switches,
+    is_onoff_smart_switch_light,
     parent_device_identifier,
     physical_device_identifier,
 )
@@ -30,7 +32,12 @@ from .pixie_inventory import (
 )
 
 
-def _iter_switch_endpoints(inventory, device_id: int | None = None) -> list[PixieEndpoint]:
+def _iter_switch_endpoints(
+    inventory,
+    *,
+    expose_onoff_switches_as_switches: bool = False,
+    device_id: int | None = None,
+) -> list[PixieEndpoint]:
     """Return switch endpoints from inventory."""
     gateway_identifier = parent_device_identifier(inventory)
     endpoints: list[PixieEndpoint] = []
@@ -85,7 +92,13 @@ def _iter_switch_endpoints(inventory, device_id: int | None = None) -> list[Pixi
                 ]
             )
 
-        if not record.capabilities.is_switch:
+        if not (
+            record.capabilities.is_switch
+            or (
+                expose_onoff_switches_as_switches
+                and is_onoff_smart_switch_light(record.capabilities)
+            )
+        ):
             continue
 
         if record.capabilities.supports_multi_channel:
@@ -229,14 +242,25 @@ async def async_setup_entry(
     if inventory is None:
         return
 
-    async_add_entities(PixiePlusSwitchEntity(runtime_data, endpoint) for endpoint in _iter_switch_endpoints(inventory))
+    expose_as_switches = expose_onoff_smart_switches_as_switches(entry)
+    async_add_entities(
+        PixiePlusSwitchEntity(runtime_data, endpoint)
+        for endpoint in _iter_switch_endpoints(
+            inventory,
+            expose_onoff_switches_as_switches=expose_as_switches,
+        )
+    )
 
     @callback
     def _async_add_device_entities(device_id: int) -> None:
         current_inventory = runtime_data.pixie_runtime.inventory
         if current_inventory is None:
             return
-        endpoints = _iter_switch_endpoints(current_inventory, device_id=int(device_id))
+        endpoints = _iter_switch_endpoints(
+            current_inventory,
+            expose_onoff_switches_as_switches=expose_as_switches,
+            device_id=int(device_id),
+        )
         if endpoints:
             async_add_entities(PixiePlusSwitchEntity(runtime_data, endpoint) for endpoint in endpoints)
 

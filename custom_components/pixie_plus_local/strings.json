@@ -166,6 +166,7 @@
           "transport": "Bluetooth settings",
           "update_device_versions": "Update device versions",
           "ha_name_sync": "Device name sync",
+          "onoff_switch_entity_type": "Expose on/off smart switch devices as switch instead of light entities",
           "cover_controller": "Blind mapping"
         }
       },
@@ -174,6 +175,13 @@
         "description": "Choose whether Home Assistant device name changes should also rename the device in the Pixie app. Entity name changes are not synced.",
         "data": {
           "sync_ha_device_names": "Sync HA device name changes to Pixie"
+        }
+      },
+      "onoff_switch_entity_type": {
+        "title": "Smart switch entity type",
+        "description": "Use switch entities for compatible Pixie on/off smart switch devices. Dimmers, colour lights, sensor devices, LED strips, and fan lights remain light entities.",
+        "data": {
+          "expose_onoff_smart_switches_as_switches": "Expose on/off smart switch devices as switch instead of light entities"
         }
       },
       "update_device_versions": {

@@ -34,6 +34,7 @@ CONF_BLE_INVENTORY = "ble_inventory"
 CONF_BLE_SCAN_SECONDS = "ble_scan_seconds"
 CONF_POWER_POLL_INTERVALS = "power_poll_intervals"
 CONF_SYNC_HA_DEVICE_NAMES = "sync_ha_device_names"
+CONF_EXPOSE_ONOFF_SMART_SWITCHES_AS_SWITCHES = "expose_onoff_smart_switches_as_switches"
 
 INVENTORY_MODE_LOCAL_53216 = "local_53216"
 INVENTORY_MODE_CLOUD_FALLBACK = "cloud_fallback"

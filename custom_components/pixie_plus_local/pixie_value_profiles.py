@@ -530,16 +530,13 @@ MODEL_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "is_switch": False,
         "supports_onoff": True,
         "is_fan": True,
-        "supports_fan_light": True,
         "supports_fan_timer": True,
         "supports_fan_sleep_config": True,
         "supports_fan_fade": True,
         "supports_fan_expected_result": True,
-        "fan_light_color_temp_kelvin": {
-            "warm": 2700,
-            "white": 4000,
-            "daylight": 6500,
-        },
+        # Earlier releases incorrectly copied 5715's fan-light capability.
+        # Keep this correction when upgrading a persisted inventory snapshot.
+        "force_disabled_capabilities": ["supports_fan_light"],
     },
     "2552": {
         "is_light": True,
@@ -780,6 +777,10 @@ def get_model_capabilities(model_no: str) -> Dict[str, Any]:
         "supports_fan_sleep_config": bool(caps.get("supports_fan_sleep_config", False)),
         "supports_fan_fade": bool(caps.get("supports_fan_fade", False)),
         "supports_fan_expected_result": bool(caps.get("supports_fan_expected_result", False)),
+        "force_disabled_capabilities": [
+            str(capability_name)
+            for capability_name in caps.get("force_disabled_capabilities", [])
+        ],
         "fan_light_color_temp_kelvin": {
             str(name): int(kelvin)
             for name, kelvin in dict(caps.get("fan_light_color_temp_kelvin") or {}).items()

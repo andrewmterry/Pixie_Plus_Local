@@ -49,6 +49,7 @@ from .pixie_const import (
     CONF_BT_STATE,
     CONF_BT_ACCESS_NODE_PREFERENCE,
     CONF_COMMAND_TRANSPORT,
+    CONF_EXPOSE_ONOFF_SMART_SWITCHES_AS_SWITCHES,
     DOMAIN,
     INVENTORY_MODE_BLE_ADVERTISEMENT,
     INVENTORY_MODE_CLOUD_FALLBACK,
@@ -1822,7 +1823,7 @@ class PixiePlusLocalOptionsFlow(OptionsFlowWithReload):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         """Choose which Pixie options to configure."""
-        menu_options = []
+        menu_options = ["onoff_switch_entity_type"]
         if self._cover_devices():
             menu_options.append("cover_controller")
         ble_only = _entry_inventory_mode(self.config_entry) == INVENTORY_MODE_BLE_ADVERTISEMENT
@@ -1886,6 +1887,32 @@ class PixiePlusLocalOptionsFlow(OptionsFlowWithReload):
                     vol.Optional(
                         CONF_SYNC_HA_DEVICE_NAMES,
                         default=bool(self.config_entry.options.get(CONF_SYNC_HA_DEVICE_NAMES, False)),
+                    ): bool,
+                }
+            ),
+        )
+
+    async def async_step_onoff_switch_entity_type(self, user_input: dict[str, Any] | None = None):
+        """Choose whether compatible on/off smart switches use switch entities."""
+        if user_input is not None:
+            options = dict(self.config_entry.options)
+            options[CONF_EXPOSE_ONOFF_SMART_SWITCHES_AS_SWITCHES] = bool(
+                user_input.get(CONF_EXPOSE_ONOFF_SMART_SWITCHES_AS_SWITCHES)
+            )
+            return self.async_create_entry(title="", data=options)
+
+        return self.async_show_form(
+            step_id="onoff_switch_entity_type",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_EXPOSE_ONOFF_SMART_SWITCHES_AS_SWITCHES,
+                        default=bool(
+                            self.config_entry.options.get(
+                                CONF_EXPOSE_ONOFF_SMART_SWITCHES_AS_SWITCHES,
+                                False,
+                            )
+                        ),
                     ): bool,
                 }
             ),

@@ -127,6 +127,12 @@ Some Pixie device settings are exposed as Home Assistant configuration entities.
 
 The Configuration menu contains optional per-home settings. The options shown depend on the home type, gateway type, Bluetooth status, and devices found in that home.
 
+### Expose on/off smart switch devices as switch instead of light entities
+
+By default, compatible Pixie on/off smart switches are exposed as Home Assistant light entities. Enable this option to expose them as switch entities instead, for example when a switch controls a bathroom fan or another non-light load. Dimmers, colour lights, sensor devices, LED strips, and fan lights remain light entities.
+
+Changing this option replaces the affected entities, so update any dashboards, automations, or customizations that use their old entity IDs.
+
 ### Add Pixie device
 
 This option shows when Bluetooth is enabled and the home supports adding/removing devices.

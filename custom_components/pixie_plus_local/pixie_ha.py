@@ -48,6 +48,7 @@ from .pixie_const import (
     CONF_BT_ENABLED,
     CONF_BT_SOURCE,
     CONF_COMMAND_TRANSPORT,
+    CONF_EXPOSE_ONOFF_SMART_SWITCHES_AS_SWITCHES,
     CONF_GATEWAY_IP,
     CONF_GATEWAY_IP_REQUIRED,
     CONF_HOME_NAME,
@@ -818,6 +819,27 @@ def endpoint_unique_identifier(record: DeviceRecord, endpoint_key: str) -> str:
     return child_device_identifier(record, endpoint_key)
 
 
+def is_onoff_smart_switch_light(capabilities: Any) -> bool:
+    """Return whether a light profile is safely representable as an on/off switch."""
+    return bool(
+        getattr(capabilities, "is_light", False)
+        and getattr(capabilities, "supports_onoff", False)
+        and not getattr(capabilities, "supports_dimming", False)
+        and not getattr(capabilities, "supports_color", False)
+        and not getattr(capabilities, "supports_color_temp", False)
+        and not getattr(capabilities, "supports_effects", False)
+        and not getattr(capabilities, "supports_sensor", False)
+        and not getattr(capabilities, "supports_multi_channel", False)
+        and not getattr(capabilities, "is_fan", False)
+        and not getattr(capabilities, "supports_fan_light", False)
+    )
+
+
+def expose_onoff_smart_switches_as_switches(entry: ConfigEntry) -> bool:
+    """Return whether this Pixie home presents compatible smart switches as switches."""
+    return bool(entry.options.get(CONF_EXPOSE_ONOFF_SMART_SWITCHES_AS_SWITCHES, False))
+
+
 def _physical_device_identifier_variants(record: DeviceRecord) -> set[str]:
     """Return current and normalized physical identifiers for one device."""
     identifiers = {physical_device_identifier(record)}
@@ -945,9 +967,38 @@ async def async_cleanup_orphaned_registry_entries(
             continue
         valid_device_ids.update(_physical_device_identifier_variants(record))
         for key in endpoint_keys:
+            if key == "fan_light" and not record.capabilities.supports_fan_light:
+                continue
             valid_entity_ids.update(_endpoint_unique_identifier_variants(record, key))
 
     ent_reg = er.async_get(hass)
+    expose_as_switches = expose_onoff_smart_switches_as_switches(entry)
+    desired_domain = "switch" if expose_as_switches else "light"
+    replaced_domain = "light" if expose_as_switches else "switch"
+    replacement_unique_ids = {
+        unique_id
+        for record in inventory.devices_by_id.values()
+        if not record.capabilities.is_gateway and is_onoff_smart_switch_light(record.capabilities)
+        for unique_id in _endpoint_unique_identifier_variants(record, "main")
+    }
+    replaced_entities = [
+        entity.entity_id
+        for entity in ent_reg.entities.values()
+        if entity.config_entry_id == entry.entry_id
+        and entity.unique_id in replacement_unique_ids
+        and entity.entity_id.partition(".")[0] == replaced_domain
+    ]
+    for entity_id in replaced_entities:
+        ent_reg.async_remove(entity_id)
+        LOGGER.debug(
+            "%sRemoved replaced %s entity: %s (using %s presentation; %s)",
+            _entry_log_prefix(entry),
+            replaced_domain,
+            entity_id,
+            desired_domain,
+            reason,
+        )
+
     stale_entities = [
         entity.entity_id
         for entity in ent_reg.entities.values()
